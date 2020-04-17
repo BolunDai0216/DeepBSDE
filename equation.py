@@ -29,6 +29,7 @@ class Equation(object):
 
 class HJBLQ(Equation):
     """HJB equation in PNAS paper doi.org/10.1073/pnas.1718942115"""
+
     def __init__(self, eqn_config):
         super(HJBLQ, self).__init__(eqn_config)
         self.x_init = np.zeros(self.dim)
@@ -54,6 +55,7 @@ class HJBLQ(Equation):
 
 class AllenCahn(Equation):
     """Allen-Cahn equation in PNAS paper doi.org/10.1073/pnas.1718942115"""
+
     def __init__(self, eqn_config):
         super(AllenCahn, self).__init__(eqn_config)
         self.x_init = np.zeros(self.dim)
@@ -81,6 +83,7 @@ class PricingDefaultRisk(Equation):
     Nonlinear Black-Scholes equation with default risk in PNAS paper
     doi.org/10.1073/pnas.1718942115
     """
+
     def __init__(self, eqn_config):
         super(PricingDefaultRisk, self).__init__(eqn_config)
         self.x_init = np.ones(self.dim) * 100.0
@@ -119,6 +122,7 @@ class PricingDiffRate(Equation):
     Nonlinear Black-Scholes equation with different interest rates for borrowing and lending
     in Section 4.4 of Comm. Math. Stat. paper doi.org/10.1007/s40304-017-0117-6
     """
+
     def __init__(self, eqn_config):
         super(PricingDiffRate, self).__init__(eqn_config)
         self.x_init = np.ones(self.dim) * 100
@@ -136,7 +140,8 @@ class PricingDiffRate(Equation):
         x_sample[:, :, 0] = np.ones([num_sample, self.dim]) * self.x_init
         factor = np.exp((self.mu_bar-(self.sigma**2)/2)*self.delta_t)
         for i in range(self.num_time_interval):
-            x_sample[:, :, i + 1] = (factor * np.exp(self.sigma * dw_sample[:, :, i])) * x_sample[:, :, i]
+            x_sample[:, :, i + 1] = (factor * np.exp(self.sigma *
+                                                     dw_sample[:, :, i])) * x_sample[:, :, i]
         return dw_sample, x_sample
 
     def f_tf(self, t, x, y, z):
@@ -154,6 +159,7 @@ class BurgersType(Equation):
     Multidimensional Burgers-type PDE in Section 4.5 of Comm. Math. Stat. paper
     doi.org/10.1007/s40304-017-0117-6
     """
+
     def __init__(self, eqn_config):
         super(BurgersType, self).__init__(eqn_config)
         self.x_init = np.zeros(self.dim)
@@ -182,6 +188,7 @@ class QuadraticGradient(Equation):
     An example PDE with quadratically growing derivatives in Section 4.6 of Comm. Math. Stat. paper
     doi.org/10.1007/s40304-017-0117-6
     """
+
     def __init__(self, eqn_config):
         super(QuadraticGradient, self).__init__(eqn_config)
         self.alpha = 0.4
@@ -211,9 +218,9 @@ class QuadraticGradient(Equation):
             2.0 * derivative + 4.0 / (self.dim ** 2) * x_square * self.alpha * (
                 (self.alpha - 1) * tf.pow(base, self.alpha - 2) * tf.cos(base_alpha) - (
                     self.alpha * tf.pow(base, 2 * self.alpha - 2) * tf.sin(base_alpha)
-                    )
                 )
             )
+        )
         return term1 + term2 + term3 + term4
 
     def g_tf(self, t, x):
@@ -226,6 +233,7 @@ class ReactionDiffusion(Equation):
     Time-dependent reaction-diffusion-type example PDE in Section 4.7 of Comm. Math. Stat. paper
     doi.org/10.1007/s40304-017-0117-6
     """
+
     def __init__(self, eqn_config):
         super(ReactionDiffusion, self).__init__(eqn_config)
         self._kappa = 0.6
@@ -252,3 +260,33 @@ class ReactionDiffusion(Equation):
 
     def g_tf(self, t, x):
         return 1 + self._kappa + tf.sin(self.lambd * tf.reduce_sum(x, 1, keepdims=True))
+
+
+class HJBLQRNN(Equation):
+    """HJB equation in PNAS paper doi.org/10.1073/pnas.1718942115 for RNN"""
+
+    def __init__(self, eqn_config):
+        super(HJBLQRNN, self).__init__(eqn_config)
+        self.x_init = np.zeros(self.dim)
+        self.sigma = np.sqrt(2.0)
+        self.lambd = 1.0
+
+    def sample(self, num_sample):
+        # changed original dimension to meet RNN requirement
+        # RNN input (batch_size, timestep, feature+1)
+        dw_sample = normal.rvs(size=[num_sample,
+                                     self.num_time_interval,
+                                     self.dim]) * self.sqrt_delta_t
+        x_sample = np.zeros([num_sample, self.num_time_interval + 1, self.dim + 1])
+        x_sample[:, 0, :-1] = np.ones([num_sample, self.dim]) * self.x_init
+        x_sample[:, 0, -1] = np.zeros([num_sample, ])
+        for i in range(self.num_time_interval):
+            x_sample[:, i + 1, :-1] = x_sample[:, i, :-1] + self.sigma * dw_sample[:, i, :]
+            x_sample[:, i + 1, -1] = np.ones([num_sample, ]) * (i+1)
+        return dw_sample, x_sample
+
+    def f_tf(self, t, x, y, z):
+        return -self.lambd * tf.reduce_sum(tf.square(z), 1, keepdims=True)
+
+    def g_tf(self, t, x):
+        return tf.math.log((1 + tf.reduce_sum(tf.square(x), 1, keepdims=True)) / 2)

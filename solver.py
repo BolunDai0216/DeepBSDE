@@ -4,16 +4,21 @@ import numpy as np
 import tensorflow as tf
 
 DELTA_CLIP = 50.0
+RNN_MODEL = True
 
 
 class BSDESolver(object):
     """The fully connected neural network model."""
+
     def __init__(self, config, bsde):
         self.eqn_config = config.eqn_config
         self.net_config = config.net_config
         self.bsde = bsde
 
-        self.model = NonsharedModel(config, bsde)
+        if RNN_MODEL:
+            self.model = RNN(config, bsde)
+        else:
+            self.model = NonsharedModel(config, bsde)
         self.y_init = self.model.y_init
         lr_schedule = tf.keras.optimizers.schedules.PiecewiseConstantDecay(
             self.net_config.lr_boundaries, self.net_config.lr_values)
@@ -39,11 +44,15 @@ class BSDESolver(object):
 
     def loss_fn(self, inputs, training):
         dw, x = inputs
-        y_terminal = self.model(inputs, training)
+        if RNN_MODEL:
+            y_terminal = self.model(inputs, training)
+        else:
+            y_terminal = self.model(inputs, training)
+
         delta = y_terminal - self.bsde.g_tf(self.bsde.total_time, x[:, :, -1])
         # use linear approximation outside the clipped range
-        loss = tf.reduce_mean(tf.where(tf.abs(delta) < DELTA_CLIP, tf.square(delta),
-                                       2 * DELTA_CLIP * tf.abs(delta) - DELTA_CLIP ** 2))
+        loss = tf.reduce_mean(tf.where(tf.abs(delta) < DELTA_CLIP, tf.square(
+            delta), 2 * DELTA_CLIP * tf.abs(delta) - DELTA_CLIP ** 2))
 
         return loss
 
@@ -125,3 +134,68 @@ class FeedForwardSubNet(tf.keras.Model):
         x = self.dense_layers[-1](x)
         x = self.bn_layers[-1](x, training)
         return x
+
+
+class RNN(tf.keras.Model):
+    def __init__(self, config, bsde):
+        super(RNN, self).__init__()
+        self.eqn_config = config.eqn_config
+        self.net_config = config.net_config
+        self.bsde = bsde
+
+        # BSDE Initialization
+        self.y_init = tf.Variable(np.random.uniform(low=self.net_config.y_init_range[0],
+                                                    high=self.net_config.y_init_range[1],
+                                                    size=[1])
+                                  )
+        self.z_init = tf.Variable(np.random.uniform(low=-.1, high=.1,
+                                                    size=[1, self.eqn_config.dim])
+                                  )
+        # RNN Model
+        rnn_units = 128
+        self.bn_layer = tf.keras.layers.BatchNormalization(
+            momentum=0.99,
+            epsilon=1e-6,
+            beta_initializer=tf.random_normal_initializer(0.0, stddev=0.1),
+            gamma_initializer=tf.random_uniform_initializer(0.1, 0.5)
+        )
+        self.lstm1 = tf.keras.layers.LSTM(rnn_units,
+                                          return_sequences=True,
+                                          recurrent_initializer='glorot_uniform',
+                                          input_shape=[None, config.eqn_config.dim+1])
+        self.lstm2 = tf.keras.layers.LSTM(rnn_units,
+                                          return_sequences=True,
+                                          recurrent_initializer='glorot_uniform')
+        self.dense = tf.keras.layers.Dense(config.eqn_config.dim)
+
+    def call(self, inputs, training):
+        dw, x = inputs
+        all_one_vec = tf.ones(shape=tf.stack([tf.shape(dw)[0], 1]), dtype=self.net_config.dtype)
+        y = all_one_vec * self.y_init
+        z = tf.matmul(all_one_vec, self.z_init)
+        dw_init = dw[:, 0, :]
+        zdw_init = tf.reduce_sum(z*dw_init, 1, keepdims=True)
+        zsq_init = self.bsde.lambd * self.bsde.delta_t * \
+            tf.reduce_sum(tf.square(z), 1, keepdims=True)
+
+        x_input = x[:, 1:-1, :]
+        x_input = self.bn_layer(x_input, training)
+        lstm_output = self.lstm1(x_input)
+        lstm_output = self.lstm2(lstm_output)
+        output = self.dense(lstm_output) / self.bsde.dim
+
+        y = y - self.bsde.lambd * self.bsde.delta_t * \
+            tf.reduce_sum(tf.reduce_sum(tf.square(output), 1), 1, keepdims=True)
+        y = y + tf.reduce_sum(tf.reduce_sum(output*dw[:, 1:, :], 1), 1, keepdims=True)
+        y -= zsq_init
+        y += zdw_init
+
+        return y
+
+
+def main():
+    pass
+
+
+if __name__ == "__main__":
+    main()
